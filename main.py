@@ -1,4 +1,8 @@
-# Upgraded main with scheduler stub
+import logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)# Upgraded main with scheduler stub
 import time
 def run_analysis():
     print('Running full prototype analysis...')
