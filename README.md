@@ -1,2 +1,8 @@
-# jarvis-trader-ecosystem
-Advanced AI-powered financial markets prediction and trading system with notifications. Integrated technical/fundamental analysis for crypto, forex, stocks.
+# JarvisTrader Ecosystem
+
+Advanced prediction system for financial markets.
+
+## Setup
+pip install -r requirements.txt
+cp .env.example .env
+python main.py

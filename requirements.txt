@@ -1,0 +1,11 @@
+pandas
+numpy
+ccxt
+yfinance
+pandas-ta
+scikit-learn
+tensorflow
+python-telegram-bot
+requests
+python-dotenv
+backtrader
