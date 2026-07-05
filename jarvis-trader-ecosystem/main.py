@@ -1,16 +1,16 @@
-import os, sys, asyncio, logging, json, time, subprocess
+import os, sys, asyncio, logging, json, time, random, subprocess, math
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import requests
 
-# ----- Self-update restarter -----
+# ===== Self-update restarter =====
 def restart_bot():
-    """Replace the current process with a fresh instance of this script."""
     logger.info("♻️ Restarting bot...")
     os.execv(sys.executable, [sys.executable, __file__])
 
-# ----- Setup -----
+# ===== Setup =====
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -20,39 +20,112 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 BINANCE_API = "https://api.binance.com/api/v3"
+FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1"
 
-# ========== AI OVERSEER CONTROLLER ==========
+# ===== AI Memory & Evolution =====
+MEMORY_FILE = "jarvis_memory.json"
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        with open(MEMORY_FILE) as f:
+            return json.load(f)
+    return {
+        "alert_threshold": 75,
+        "monitoring": True,
+        "active_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+        "scan_interval_min": 5,
+        "signal_history": [],
+        "feedback_positive": 0,
+        "feedback_negative": 0,
+        "interaction_count": 0,
+        "last_evolved": None
+    }
+
+def save_memory(mem):
+    with open(MEMORY_FILE, 'w') as f:
+        json.dump(mem, f, indent=2)
+
+memory = load_memory()
+
 class JarvisController:
     def __init__(self):
-        self.monitoring = True
-        self.active_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-        self.scan_interval = 1800
-        self.alert_threshold = 75
-        self.last_signals = {}
+        self.memory = memory
 
-    def toggle_monitoring(self, state: bool):
-        self.monitoring = state
-        return self.monitoring
+    def toggle_monitoring(self, state: bool = None):
+        if state is not None:
+            self.memory["monitoring"] = state
+        else:
+            self.memory["monitoring"] = not self.memory["monitoring"]
+        save_memory(self.memory)
+        return self.memory["monitoring"]
 
     def set_symbols(self, symbols):
-        self.active_symbols = [s.upper() for s in symbols]
-        return self.active_symbols
+        self.memory["active_symbols"] = [s.upper() for s in symbols]
+        save_memory(self.memory)
+        return self.memory["active_symbols"]
 
-    def adjust_interval(self, minutes: int):
-        self.scan_interval = max(60, minutes * 60)
-        return self.scan_interval
+    def add_symbol(self, sym):
+        if sym.upper() not in self.memory["active_symbols"]:
+            self.memory["active_symbols"].append(sym.upper())
+            save_memory(self.memory)
+        return self.memory["active_symbols"]
 
-    def get_status_report(self):
+    def remove_symbol(self, sym):
+        if sym.upper() in self.memory["active_symbols"]:
+            self.memory["active_symbols"].remove(sym.upper())
+            save_memory(self.memory)
+        return self.memory["active_symbols"]
+
+    def set_threshold(self, val):
+        self.memory["alert_threshold"] = max(50, min(100, val))
+        save_memory(self.memory)
+        return self.memory["alert_threshold"]
+
+    def adjust_interval(self, minutes):
+        self.memory["scan_interval_min"] = max(1, minutes)
+        save_memory(self.memory)
+        return self.memory["scan_interval_min"]
+
+    def log_signal(self, signal):
+        self.memory["signal_history"].append({
+            "time": datetime.now().isoformat(),
+            **signal
+        })
+        save_memory(self.memory)
+
+    def add_feedback(self, positive):
+        if positive:
+            self.memory["feedback_positive"] += 1
+        else:
+            self.memory["feedback_negative"] += 1
+        # Auto-evolve threshold based on feedback
+        if self.memory["feedback_negative"] > self.memory["feedback_positive"] and self.memory["alert_threshold"] < 95:
+            self.memory["alert_threshold"] += 1
+        elif self.memory["feedback_positive"] > self.memory["feedback_negative"] and self.memory["alert_threshold"] > 50:
+            self.memory["alert_threshold"] -= 1
+        save_memory(self.memory)
+
+    def evolve(self):
+        # Analyze signal history and adjust parameters
+        if len(self.memory["signal_history"]) < 5:
+            return "Not enough data to evolve yet."
+        self.memory["last_evolved"] = datetime.now().isoformat()
+        save_memory(self.memory)
+        # Example: if many false signals, increase threshold
+        if self.memory["feedback_negative"] > self.memory["feedback_positive"]:
+            self.set_threshold(self.memory["alert_threshold"] + 2)
+            return f"🔧 Threshold increased to {self.memory['alert_threshold']}% (more selective)."
+        else:
+            return "✅ Parameters already balanced. No evolution needed."
+
+    def get_status(self):
         return {
-            "monitoring": self.monitoring,
-            "symbols": self.active_symbols,
-            "scan_interval_min": self.scan_interval // 60,
-            "last_signals": self.last_signals,
+            **self.memory,
+            "last_signals": self.memory["signal_history"][-5:]
         }
 
 controller = JarvisController()
 
-# ----- Data fetching -----
+# ===== Data fetching (pure Python) =====
 def fetch_klines(symbol="BTCUSDT", interval="1h", limit=100):
     url = f"{BINANCE_API}/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -72,7 +145,12 @@ def fetch_klines(symbol="BTCUSDT", interval="1h", limit=100):
         })
     return candles
 
-# ----- Indicators (pure Python) -----
+def fetch_ticker(symbol):
+    url = f"{BINANCE_API}/ticker/24hr"
+    resp = requests.get(url, params={"symbol": symbol}, timeout=10)
+    return resp.json()
+
+# ===== Indicators (pure Python) =====
 def compute_rsi(candles, period=14):
     if len(candles) < period + 1:
         return None
@@ -113,109 +191,273 @@ def detect_patterns(candles):
         alerts.append({"name": "RSI Overbought", "confidence": 75})
     return alerts
 
-# ----- Background scan -----
-async def master_scan(context: ContextTypes.DEFAULT_TYPE):
-    if not controller.monitoring:
-        return
-    for symbol in controller.active_symbols:
-        try:
-            candles = fetch_klines(symbol, "1h", 200)
-            patterns = detect_patterns(candles)
-            controller.last_signals[symbol] = patterns
-            for p in patterns:
-                if p["confidence"] >= controller.alert_threshold:
-                    await context.bot.send_message(
-                        chat_id=CHAT_ID,
-                        text=f"🤖 *Jarvis AI Alert* – {symbol}\n{p['name']} (confidence: {p['confidence']}%)",
-                        parse_mode="Markdown"
-                    )
-        except Exception as e:
-            logger.warning(f"Scan failed for {symbol}: {e}")
+def detect_bull_bear(candles):
+    if len(candles) < 20:
+        return "neutral"
+    closes = [c["close"] for c in candles]
+    ma20 = sum(closes[-20:]) / 20
+    if closes[-1] > ma20 * 1.02:
+        return "bullish"
+    elif closes[-1] < ma20 * 0.98:
+        return "bearish"
+    return "neutral"
 
-# ========== COMMANDS ==========
+def simple_backtest(candles, fast=10, slow=30):
+    if len(candles) < slow:
+        return "Insufficient data"
+    closes = [c["close"] for c in candles]
+    capital = 1000
+    position = 0
+    for i in range(slow, len(closes)):
+        ma_fast = sum(closes[i-fast:i]) / fast
+        ma_slow = sum(closes[i-slow:i]) / slow
+        prev_ma_fast = sum(closes[i-fast-1:i-1]) / fast
+        prev_ma_slow = sum(closes[i-slow-1:i-1]) / slow
+        if prev_ma_fast < prev_ma_slow and ma_fast > ma_slow and position == 0:
+            position = capital / closes[i]
+            capital = 0
+        elif prev_ma_fast > prev_ma_slow and ma_fast < ma_slow and position > 0:
+            capital = position * closes[i]
+            position = 0
+    final = capital + (position * closes[-1] if position else 0)
+    profit = final - 1000
+    return f"Backtest MA{fast}/{slow} crossover: initial $1000 → ${final:.2f} ({profit:+.2f}%)"
+
+def get_fear_greed():
+    try:
+        data = requests.get(FEAR_GREED_URL, timeout=5).json()
+        val = int(data["data"][0]["value"])
+        classification = data["data"][0]["value_classification"]
+        return val, classification
+    except:
+        return None, None
+
+def get_top_movers():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "XRPUSDT", "BNBUSDT"]
+    movers = []
+    for sym in symbols:
+        try:
+            t = fetch_ticker(sym)
+            change = float(t.get("priceChangePercent", 0))
+            movers.append((sym, change))
+        except:
+            pass
+    movers.sort(key=lambda x: abs(x[1]), reverse=True)
+    return movers[:5]
+
+# ===== Telegram Command Handlers (1000+ commands spirit) =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *Jarvis AI Overseer Online*\n\n"
-        "Commands:\n"
-        "/scan – quick scan\n"
-        "/rsi – RSI check\n"
-        "/status – system overview\n"
-        "/monitor on|off – background monitoring\n"
-        "/symbols BTC ETH – set tracked symbols\n"
-        "/interval <minutes> – scan interval\n"
-        "/oversee – full AI market report\n"
-        "/update – pull latest code from GitHub & restart\n"
-        "/restart – restart the bot (no git pull)",
+        "🤖 *Jarvis AI Overseer* ready, sir.\n\n"
+        "I am your personal trading intelligence, capable of market scanning, RSI/MACD analysis, "
+        "self‑evolution, backtesting, sentiment tracking, and more.\n\n"
+        "Use /help for full command list.",
         parse_mode="Markdown"
     )
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📚 *Command Center*\n\n"
+        "📊 *Market Analysis:*\n"
+        "/scan – quick market scan\n"
+        "/rsi – RSI values\n"
+        "/oversee – full AI report\n"
+        "/topmovers – top 24h movers\n"
+        "/sentiment – Fear & Greed index\n"
+        "/backtest – MA crossover backtest\n"
+        "/predict <symbol> – short‑term prediction\n\n"
+        "🧠 *AI Control:*\n"
+        "/monitor on|off – background scanning\n"
+        "/symbols <list> – set tracked symbols\n"
+        "/addsymbol <sym> / removesymbol <sym>\n"
+        "/interval <min> – scan interval\n"
+        "/setthreshold <value> – alert confidence threshold\n"
+        "/feedback good|bad – train the AI\n"
+        "/evolve – auto‑optimize parameters\n"
+        "/logs – recent activity\n"
+        "/alerts – recent signals\n"
+        "/status – system overview\n\n"
+        "🔄 *System:*\n"
+        "/update – pull from GitHub & restart\n"
+        "/restart – soft restart\n"
+        "/ping – check if alive"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ Online, sir.")
+
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Running overseer scan...")
-    await master_scan(context)
+    await update.message.reply_text("🔍 Scanning markets...")
+    for sym in controller.memory["active_symbols"]:
+        candles = fetch_klines(sym, "1h", 200)
+        patterns = detect_patterns(candles)
+        if patterns:
+            for p in patterns:
+                if p["confidence"] >= controller.memory["alert_threshold"]:
+                    await update.message.reply_text(f"⚠️ {sym}: {p['name']} ({p['confidence']}%)", parse_mode="Markdown")
     await update.message.reply_text("✅ Scan complete.")
 
 async def rsi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = ""
-    for sym in controller.active_symbols:
+    for sym in controller.memory["active_symbols"]:
         candles = fetch_klines(sym, "1h", 100)
         rsi = compute_rsi(candles)
         msg += f"{sym} RSI: {rsi if rsi else 'N/A'}\n"
     await update.message.reply_text(msg or "No data.")
 
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    report = controller.get_status_report()
-    text = (
-        f"*Jarvis AI Status*\n"
-        f"Monitoring: {'ON' if report['monitoring'] else 'OFF'}\n"
-        f"Symbols: {', '.join(report['symbols'])}\n"
-        f"Scan interval: {report['scan_interval_min']} min"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
+async def oversee_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧠 Jarvis is analyzing all markets...")
+    report = ["*Jarvis AI Market Report*"]
+    for sym in controller.memory["active_symbols"]:
+        candles = fetch_klines(sym, "1h", 200)
+        patterns = detect_patterns(candles)
+        rsi = compute_rsi(candles)
+        change = (candles[-1]["close"] - candles[0]["close"]) / candles[0]["close"] * 100 if candles else 0
+        bias = detect_bull_bear(candles)
+        report.append(f"\n*{sym}* | {change:+.2f}% | RSI: {rsi if rsi else 'N/A'} | Bias: {bias}")
+        for p in patterns:
+            report.append(f"• {p['name']} ({p['confidence']}%)")
+    await update.message.reply_text("\n".join(report), parse_mode="Markdown")
+
+async def topmovers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    movers = get_top_movers()
+    msg = "📈 *Top 24h Movers*\n" + "\n".join([f"{'🟢' if ch>=0 else '🔴'} {s}: {ch:+.2f}%" for s,ch in movers])
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def sentiment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    val, cls = get_fear_greed()
+    if val:
+        emoji = "😱" if val < 30 else "😐" if val < 60 else "😀"
+        await update.message.reply_text(f"Crypto Fear & Greed Index: *{val}* – {cls} {emoji}", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ Could not fetch sentiment data.")
+
+async def backtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    candles = fetch_klines("BTCUSDT", "1h", 500)
+    result = simple_backtest(candles)
+    await update.message.reply_text(result)
+
+async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sym = context.args[0].upper() if context.args else "BTCUSDT"
+    candles = fetch_klines(sym, "1h", 100)
+    rsi = compute_rsi(candles)
+    bias = detect_bull_bear(candles)
+    if rsi and rsi < 30:
+        prediction = "🟢 Likely to bounce (oversold)."
+    elif rsi and rsi > 70:
+        prediction = "🔴 Likely to pull back (overbought)."
+    else:
+        prediction = "⚪ Neutral."
+    await update.message.reply_text(f"*Prediction for {sym}:* {prediction}\nBias: {bias}", parse_mode="Markdown")
 
 async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args and context.args[0].lower() == "on":
-        controller.toggle_monitoring(True)
-        await update.message.reply_text("✅ Monitoring ON.")
-    elif context.args and context.args[0].lower() == "off":
-        controller.toggle_monitoring(False)
-        await update.message.reply_text("⏸️ Monitoring OFF.")
+    if context.args:
+        state = context.args[0].lower()
+        if state in ["on", "true", "1"]:
+            controller.toggle_monitoring(True)
+            await update.message.reply_text("✅ Monitoring ON.")
+        elif state in ["off", "false", "0"]:
+            controller.toggle_monitoring(False)
+            await update.message.reply_text("⏸️ Monitoring OFF.")
+        else:
+            await update.message.reply_text("Usage: /monitor on|off")
     else:
-        await update.message.reply_text("Usage: /monitor on|off")
+        status = controller.toggle_monitoring()
+        await update.message.reply_text(f"Monitoring {'ON' if status else 'OFF'}.")
 
 async def symbols_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /symbols BTC ETH SOL ...")
         return
-    new_syms = controller.set_symbols(context.args)
-    await update.message.reply_text(f"✅ Symbols: {', '.join(new_syms)}")
+    syms = controller.set_symbols(context.args)
+    await update.message.reply_text(f"✅ Tracking: {', '.join(syms)}")
+
+async def addsymbol_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /addsymbol ADA")
+        return
+    syms = controller.add_symbol(context.args[0])
+    await update.message.reply_text(f"✅ Added. Now: {', '.join(syms)}")
+
+async def removesymbol_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /removesymbol ADA")
+        return
+    syms = controller.remove_symbol(context.args[0])
+    await update.message.reply_text(f"✅ Removed. Now: {', '.join(syms)}")
 
 async def interval_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /interval 10")
+        await update.message.reply_text("Usage: /interval 10 (minutes)")
         return
     try:
         mins = int(context.args[0])
-        new_int = controller.adjust_interval(mins)
-        await update.message.reply_text(f"✅ Interval set to {new_int//60} min.")
+        controller.adjust_interval(mins)
+        await update.message.reply_text(f"✅ Scan interval set to {mins} min.")
     except:
         await update.message.reply_text("Invalid number.")
 
-async def oversee_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Analyzing all markets...")
-    report_lines = ["*🧠 Jarvis AI Market Report*"]
-    for sym in controller.active_symbols:
-        candles = fetch_klines(sym, "1h", 200)
-        patterns = detect_patterns(candles)
-        rsi = compute_rsi(candles)
-        change = (candles[-1]["close"] - candles[0]["close"]) / candles[0]["close"] * 100 if candles else 0
-        report_lines.append(
-            f"\n*{sym}* | 1h change: {change:+.2f}% | RSI: {rsi if rsi else 'N/A'}\n"
-            + ("No patterns" if not patterns else "\n".join([f"• {p['name']} ({p['confidence']}%)" for p in patterns]))
-        )
-    await update.message.reply_text("\n".join(report_lines), parse_mode="Markdown")
+async def setthreshold_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /setthreshold 75")
+        return
+    try:
+        val = int(context.args[0])
+        controller.set_threshold(val)
+        await update.message.reply_text(f"✅ Alert threshold set to {val}%")
+    except:
+        await update.message.reply_text("Invalid number.")
+
+async def feedback_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args or context.args[0].lower() not in ["good", "bad"]:
+        await update.message.reply_text("Usage: /feedback good|bad")
+        return
+    is_good = context.args[0].lower() == "good"
+    controller.add_feedback(is_good)
+    await update.message.reply_text(f"📝 Feedback recorded as {'positive' if is_good else 'negative'}. Thank you, sir.")
+
+async def evolve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = controller.evolve()
+    await update.message.reply_text(f"🧬 {result}")
+
+async def alerts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    history = controller.memory["signal_history"][-10:]
+    if not history:
+        await update.message.reply_text("No recent alerts.")
+    else:
+        lines = ["*Recent Alerts*"]
+        for h in reversed(history):
+            lines.append(f"• {h['time'][:16]} – {h.get('name','Signal')} ({h.get('confidence','?')}%)")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with open(MEMORY_FILE) as f:
+        data = json.load(f)
+    # simple stats
+    total_signals = len(data["signal_history"])
+    pos_fb = data["feedback_positive"]
+    neg_fb = data["feedback_negative"]
+    await update.message.reply_text(
+        f"📋 *Jarvis Logs*\nTotal signals: {total_signals}\nPositive feedback: {pos_fb}\nNegative feedback: {neg_fb}\nThreshold: {data['alert_threshold']}%\nMonitoring: {'ON' if data['monitoring'] else 'OFF'}",
+        parse_mode="Markdown"
+    )
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mem = controller.memory
+    text = (
+        f"*Jarvis Status*\n"
+        f"Monitoring: {'ON' if mem['monitoring'] else 'OFF'}\n"
+        f"Symbols: {', '.join(mem['active_symbols'])}\n"
+        f"Scan interval: {mem['scan_interval_min']} min\n"
+        f"Alert threshold: {mem['alert_threshold']}%\n"
+        f"Signals: {len(mem['signal_history'])}\n"
+        f"Feedback: +{mem['feedback_positive']} / -{mem['feedback_negative']}\n"
+        f"Last evolved: {mem.get('last_evolved','never')}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pull latest code from GitHub and restart."""
     await update.message.reply_text("🔄 Pulling latest code from GitHub...")
     try:
         result = subprocess.run(
@@ -237,21 +479,43 @@ async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time.sleep(1)
     restart_bot()
 
-# ========== MAIN ==========
+# ===== Background Master Scan =====
+async def master_scan(context: ContextTypes.DEFAULT_TYPE):
+    if not controller.memory["monitoring"]:
+        return
+    for symbol in controller.memory["active_symbols"]:
+        try:
+            candles = fetch_klines(symbol, "1h", 200)
+            patterns = detect_patterns(candles)
+            for p in patterns:
+                if p["confidence"] >= controller.memory["alert_threshold"]:
+                    await context.bot.send_message(
+                        chat_id=CHAT_ID,
+                        text=f"🤖 *Jarvis AI Alert* – {symbol}\n{p['name']} ({p['confidence']}%)",
+                        parse_mode="Markdown"
+                    )
+                    controller.log_signal({"symbol": symbol, **p})
+        except Exception as e:
+            logger.warning(f"Scan failed for {symbol}: {e}")
+
+# ===== Main Application =====
 async def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("scan", scan_cmd))
-    app.add_handler(CommandHandler("rsi", rsi_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("monitor", monitor_cmd))
-    app.add_handler(CommandHandler("symbols", symbols_cmd))
-    app.add_handler(CommandHandler("interval", interval_cmd))
-    app.add_handler(CommandHandler("oversee", oversee_cmd))
-    app.add_handler(CommandHandler("update", update_cmd))
-    app.add_handler(CommandHandler("restart", restart_cmd))
-    app.job_queue.run_repeating(master_scan, interval=300, first=10)
-    logger.info("🤖 Self-upgrading Jarvis AI Overseer started...")
+    handlers = {
+        "start": start, "help": help_cmd, "ping": ping, "scan": scan_cmd, "rsi": rsi_cmd,
+        "oversee": oversee_cmd, "topmovers": topmovers_cmd, "sentiment": sentiment_cmd,
+        "backtest": backtest_cmd, "predict": predict_cmd, "monitor": monitor_cmd,
+        "symbols": symbols_cmd, "addsymbol": addsymbol_cmd, "removesymbol": removesymbol_cmd,
+        "interval": interval_cmd, "setthreshold": setthreshold_cmd, "feedback": feedback_cmd,
+        "evolve": evolve_cmd, "alerts": alerts_cmd, "logs": logs_cmd, "status": status_cmd,
+        "update": update_cmd, "restart": restart_cmd
+    }
+    for cmd, func in handlers.items():
+        app.add_handler(CommandHandler(cmd, func))
+    # Background scan interval from memory
+    interval = controller.memory["scan_interval_min"] * 60
+    app.job_queue.run_repeating(master_scan, interval=interval, first=10)
+    logger.info("🤖 Jarvis AI Overseer (full command suite) starting...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()

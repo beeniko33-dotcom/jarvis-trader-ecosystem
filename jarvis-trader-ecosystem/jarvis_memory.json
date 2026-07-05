@@ -1,0 +1,15 @@
+{
+  "alert_threshold": 75,
+  "monitoring": true,
+  "active_symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "scan_interval_min": 5,
+  "signal_history": [],
+  "feedback_positive": 0,
+  "feedback_negative": 0,
+  "interaction_count": 0,
+  "last_evolved": null
+}
