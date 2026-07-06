@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'api_service.dart';
 
 void main() => runApp(const JarvisApp());
 
@@ -17,8 +18,21 @@ class JarvisApp extends StatelessWidget {
   }
 }
 
-class HomeContent extends StatelessWidget {
+class HomeContent extends StatefulWidget {
   const HomeContent({super.key});
+  @override
+  State<HomeContent> createState() => _HomeContentState();
+}
+
+class _HomeContentState extends State<HomeContent> {
+  String? _readme;
+  bool _loading = false;
+
+  Future<void> _loadReadme() async {
+    setState(() { _loading = true; _readme = null; });
+    final res = await fetchReadme();
+    setState(() { _loading = false; _readme = res ?? 'Failed to load'; });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -27,12 +41,10 @@ class HomeContent extends StatelessWidget {
       children: [
         const Text('Jarvis Trader - Flutter Demo', style: TextStyle(fontSize: 18)),
         const SizedBox(height: 12),
-        ElevatedButton(onPressed: () => _ping(context), child: const Text('Ping API'))
+        ElevatedButton(onPressed: _loadReadme, child: const Text('Load README')),
+        if (_loading) const Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator()),
+        if (_readme != null) Padding(padding: const EdgeInsets.all(12), child: SizedBox(height:200, child: SingleChildScrollView(child: Text(_readme!)))),
       ],
     );
-  }
-
-  void _ping(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Hello from Jarvis Flutter')));
   }
 }
