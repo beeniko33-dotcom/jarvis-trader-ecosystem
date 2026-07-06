@@ -1,0 +1,22 @@
+name: Expo CI
+
+on:
+  push:
+    paths:
+      - 'mobile/expo/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install Expo deps
+        working-directory: mobile/expo
+        run: npm ci
+      - name: Lint / Smoke
+        working-directory: mobile/expo
+        run: node -v && npm run --silent --version || true

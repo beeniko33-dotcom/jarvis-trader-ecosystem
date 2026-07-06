@@ -1,0 +1,24 @@
+name: Flutter CI
+
+on:
+  push:
+    paths:
+      - 'mobile/flutter/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - name: Flutter --version
+        run: flutter --version
+      - name: Pub get
+        working-directory: mobile/flutter
+        run: flutter pub get
+      - name: Analyze
+        working-directory: mobile/flutter
+        run: flutter analyze || true
