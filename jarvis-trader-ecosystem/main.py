@@ -2,6 +2,7 @@ import os, sys, asyncio, logging, json, time, subprocess, re, random
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update
+from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import requests
 
@@ -32,16 +33,143 @@ FOREX_NAMES = {
 }
 
 MEMORY_FILE = "jarvis_memory.json"
-def load_memory():
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE) as f: return json.load(f)
-    return {
-        "alert_threshold":75,"monitoring":True,
-        "active_forex_pairs":["EURUSD","GBPUSD","XAUUSD","USDJPY","XAGUSD"],
-        "scan_interval_min":5,"signal_history":[],
-        "feedback_positive":0,"feedback_negative":0,
-        "paper_trades":[],"paper_balance":1000.0,"last_evolved":None
+
+PRICE_CACHE = {}
+
+def cache_price(symbol, price):
+    if price is None:
+        return
+    PRICE_CACHE[symbol.upper()] = {"price": price, "ts": time.time()}
+
+
+def get_cached_price(symbol, ttl=20):
+    sym = symbol.upper()
+    cached = PRICE_CACHE.get(sym)
+    if cached and time.time() - cached["ts"] < ttl:
+        return cached["price"]
+    return None
+
+
+def clear_telegram_state():
+    if not TOKEN:
+        return
+    base_url = f"https://api.telegram.org/bot{TOKEN}"
+    try:
+        resp = requests.post(f"{base_url}/deleteWebhook", json={"drop_pending_updates":True}, timeout=10)
+        if resp.ok:
+            logger.info("Cleared webhook state.")
+        else:
+            logger.warning("deleteWebhook failed: %s", resp.text)
+    except Exception as e:
+        logger.warning("Failed to clear webhook: %s", e)
+
+    for attempt in range(3):
+        try:
+            resp = requests.post(f"{base_url}/getUpdates", json={"timeout":1}, timeout=10)
+            if resp.ok:
+                logger.info("Flushed pending getUpdates state.")
+                return
+            elif resp.status_code == 409:
+                logger.warning("getUpdates conflict while clearing state (attempt %s).", attempt+1)
+            else:
+                logger.warning("Unexpected getUpdates response while clearing state: %s", resp.text)
+        except Exception as e:
+            logger.warning("Error flushing getUpdates state: %s", e)
+        time.sleep(2)
+    logger.warning("Telegram state clearing completed with residual conflicts.")
+
+
+def parse_symbol(text):
+    normalized = text.lower()
+    mapping = {
+        "gold": "XAUUSD", "xauusd": "XAUUSD",
+        "silver": "XAGUSD", "xagusd": "XAGUSD",
+        "eurusd": "EURUSD", "gbpusd": "GBPUSD",
+        "usdjpy": "USDJPY", "usdchf": "USDCHF",
+        "audusd": "AUDUSD", "nzdusd": "NZDUSD",
+        "usdcad": "USDCAD", "eurjpy": "EURJPY",
+        "gbpjpy": "GBPJPY"
     }
+    for key, pair in mapping.items():
+        if key in normalized:
+            return pair
+    return None
+
+
+def get_market_briefing_text():
+    pairs = brain.memory["active_forex_pairs"]
+    summary_lines = ["*Market Briefing — Jarvis AI*", f"Active pairs: {', '.join(pairs)}"]
+    for pair in pairs[:4]:
+        price = get_forex_price(pair)
+        if price is not None:
+            summary_lines.append(f"• {pair}: {price:.5f}")
+    events = get_economic_events()
+    if events:
+        summary_lines.append("\n*High-Impact Events Today*")
+        for e in events[:3]:
+            summary_lines.append(f"• {e.get('time','')} {e.get('currency','')}: {e.get('event','')} ({e.get('impact','')})")
+    return "\n".join(summary_lines)
+
+
+def ai_assistant_response(user_text):
+    prompt = (user_text or "").strip()
+    if not prompt:
+        return "Hello! Ask me about forex, metals, market strategy, risk, or autopilot operations."
+    low = prompt.lower()
+    symbol = parse_symbol(prompt)
+    if "autopilot" in low:
+        status = "enabled" if brain.memory.get("autopilot_enabled") else "disabled"
+        return f"Autopilot is currently *{status}*. Use /autopilot on or /autopilot off to control it."
+    if "briefing" in low or "market" in low or "summary" in low:
+        return get_market_briefing_text()
+    if "strategy" in low or "plan" in low or "trade" in low:
+        if symbol:
+            rating = rate_forex_setup(symbol)
+            if rating:
+                return (f"*Jarvis Strategy for {symbol}*\nPrice: {rating['price']:.5f}\nScore: {rating['score']}/100\n" +
+                        ("\n".join(rating['reasons']) if rating['reasons'] else "No strong signals currently."))
+        return "Send me a symbol like EURUSD or GOLD and I will generate a strategy summary."
+    if "risk" in low or "exposure" in low:
+        return "I recommend using small position sizes, diversified active pairs, and limiting paper trade exposure to 10% of balance per idea. Autopilot can be set to conservative, balanced, or aggressive."
+    if symbol:
+        rating = rate_forex_setup(symbol)
+        if rating:
+            return (f"*Jarvis Market View — {symbol}*\nPrice: {rating['price']:.5f}\nScore: {rating['score']}/100\n" +
+                    ("\n".join(rating['reasons']) if rating['reasons'] else "No strong trend signals currently."))
+    return "I’m your AI assistant. Ask about forex prices, strategy, risk, or use /assistant to chat with me directly."
+
+
+def load_memory():
+    default = {
+        "alert_threshold":75,
+        "monitoring":True,
+        "autopilot_enabled":False,
+        "autopilot_mode":"balanced",
+        "autopilot_risk":"medium",
+        "active_forex_pairs":["EURUSD","GBPUSD","XAUUSD","USDJPY","XAGUSD"],
+        "scan_interval_min":5,
+        "signal_history":[],
+        "feedback_positive":0,
+        "feedback_negative":0,
+        "paper_trades":[],
+        "paper_balance":1000.0,
+        "last_evolved":None,
+        "last_briefing":None
+    }
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                if "active_symbols" in data and "active_forex_pairs" not in data:
+                    data["active_forex_pairs"] = [s.upper() for s in data.get("active_symbols",[])]
+                for key, value in default.items():
+                    data.setdefault(key, value)
+                return data
+        except Exception:
+            pass
+    return default
+
 def save_memory(mem):
     with open(MEMORY_FILE,'w') as f: json.dump(mem,f,indent=2)
 memory = load_memory()
@@ -56,14 +184,39 @@ class JarvisBrain:
     def set_forex_pairs(self, pairs):
         self.memory["active_forex_pairs"] = [p.upper() for p in pairs]
         save_memory(self.memory); return self.memory["active_forex_pairs"]
-    def execute_paper_trade(self, symbol, direction, confidence):
+    def get_autopilot_status(self):
+        return {
+            "enabled": self.memory.get("autopilot_enabled", False),
+            "mode": self.memory.get("autopilot_mode", "balanced"),
+            "risk": self.memory.get("autopilot_risk", "medium"),
+            "signals": len(self.memory.get("autopilot_signals", []))
+        }
+    def execute_paper_trade(self, symbol, direction, confidence, risk_scale=0.1):
         price = get_forex_price(symbol)
         if price is None: return "❌ Could not fetch price."
-        size = (self.memory["paper_balance"] * 0.1) / price
+        balance = self.memory.get("paper_balance", 1000.0)
+        size = (balance * risk_scale) / price
         trade = {"time":datetime.now().isoformat(),"symbol":symbol,"direction":direction,"entry":price,"size":size,"confidence":confidence,"closed":False}
         self.memory["paper_trades"].append(trade)
         save_memory(self.memory)
         return f"📝 Paper {direction.upper()} {size:.4f} {symbol.upper()} @ {price:.5f}"
+    def autopilot_execute(self, symbol, pattern_name, confidence):
+        risk = self.memory.get("autopilot_risk", "medium")
+        if risk == "low": scale = 0.05
+        elif risk == "high": scale = 0.15
+        else: scale = 0.1
+        direction = "buy" if "bull" in pattern_name.lower() else "sell"
+        result = self.execute_paper_trade(symbol, direction, confidence, risk_scale=scale)
+        self.memory.setdefault("autopilot_signals", []).append({
+            "time": datetime.now().isoformat(),
+            "symbol": symbol,
+            "direction": direction,
+            "pattern": pattern_name,
+            "confidence": confidence,
+            "result": result
+        })
+        save_memory(self.memory)
+        return result
     def close_paper_trade(self, idx):
         try:
             trade = self.memory["paper_trades"][idx]
@@ -97,25 +250,36 @@ brain = JarvisBrain()
 
 def get_forex_price(symbol):
     sym = symbol.upper()
-    if sym in ["BITCOIN","ETHEREUM","SOLANA","BTC","ETH","SOL"]: return get_crypto_price(sym.lower())
+    cached = get_cached_price(sym)
+    if cached is not None:
+        return cached
+    if sym in ["BITCOIN","ETHEREUM","SOLANA","BTC","ETH","SOL"]:
+        return get_crypto_price(sym.lower())
     if sym == "XAUUSD":
         try:
             url = f"{CRYPTO_API}/simple/price?ids=gold&vs_currencies=usd"
             resp = requests.get(url, timeout=5).json()
-            return float(resp["gold"]["usd"])
+            price = float(resp["gold"]["usd"])
+            cache_price(sym, price)
+            return price
         except: pass
     if sym == "XAGUSD":
         try:
             url = f"{CRYPTO_API}/simple/price?ids=silver&vs_currencies=usd"
             resp = requests.get(url, timeout=5).json()
-            return float(resp["silver"]["usd"])
+            price = float(resp["silver"]["usd"])
+            cache_price(sym, price)
+            return price
         except: pass
     base = sym[:3]
     quote = sym[3:] if len(sym)==6 else "USD"
     try:
         url = f"https://api.exchangerate-api.com/v4/latest/{base}"
         resp = requests.get(url, timeout=5).json()
-        if resp.get("rates"): return 1.0/resp["rates"][quote] if base!="USD" else resp["rates"][quote]
+        if resp.get("rates"):
+            price = 1.0/resp["rates"][quote] if base!="USD" else resp["rates"][quote]
+            cache_price(sym, price)
+            return price
     except: pass
     try:
         url = f"https://api.frankfurter.app/latest?from={base}&to={quote}"
@@ -125,16 +289,24 @@ def get_forex_price(symbol):
     return None
 
 def get_crypto_price(symbol="bitcoin"):
+    sym = symbol.lower()
+    cached = get_cached_price(sym)
+    if cached is not None:
+        return cached
     try:
         url = f"{CRYPTO_API}/simple/price?ids={symbol}&vs_currencies=usd"
         resp = requests.get(url, timeout=5).json()
-        return float(resp[symbol]["usd"])
+        price = float(resp[symbol]["usd"])
+        cache_price(sym, price)
+        return price
     except:
         try:
             sym = symbol.upper()+"USDT"
             url = f"{BINANCE_API}/ticker/price?symbol={sym}"
             resp = requests.get(url, timeout=5).json()
-            return float(resp["price"])
+            price = float(resp["price"])
+            cache_price(symbol.upper(), price)
+            return price
         except: return None
 
 def get_economic_events():
@@ -219,9 +391,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📚 *Forex AI Commands*\n"
         "/forex – live forex rates\n/calendar – economic events\n/metals – XAUUSD / XAGUSD\n/setup <pair> – full analysis\n"
-        "/mtsignal <pair> – MT5 signal\n/paperbuy /papersell <pair>\n/paperclose <idx> /paperstatus\n"
-        "/scanforex – scan active pairs\n/monitor on|off\n/update – pull from GitHub\n"
-        "Or say: 'forex', 'setup EURUSD', 'gold price', 'buy GBPUSD'"
+        "/mtsignal <pair> – MT5 signal\n/strategy <pair> – signal strategy\n/briefing – market briefing\n/paperbuy /papersell <pair>\n/paperclose <idx> /paperstatus\n"
+        "/assistant <question> – AI assistant chat\n/autopilot on|off|mode <balanced|aggressive|conservative>|risk <low|medium|high>\n"
+        "/scanforex – scan active pairs\n/voicealert <message> – speak alert\n/monitor on|off\n/update – pull from GitHub\n"
+        "Or just send a natural message: 'market briefing', 'eurusd strategy', 'autopilot status'"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -244,6 +417,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price = get_forex_price("XAGUSD")
         if price: await update.message.reply_text(f"⚪ XAGUSD = ${price:.2f}")
         else: await update.message.reply_text("❌ Could not fetch.")
+        return
+    if re.search(r'\b(ai|assistant|help me|explain|autopilot|strategy|forecast|market summary|briefing)\b', text):
+        await update.message.reply_text(ai_assistant_response(text), parse_mode="Markdown")
         return
     if re.search(r'\b(setup|analyze)\b', text):
         syms = re.findall(r'\b(eurusd|gbpusd|usdjpy|usdchf|audusd|nzdusd|usdcad|xauusd|xagusd|eurjpy|gbpjpy|eur|gbp|jpy|chf|aud|nzd|cad|gold|silver)\b', text)
@@ -336,6 +512,12 @@ async def paperclose_cmd(update, context):
     try: await update.message.reply_text(brain.close_paper_trade(int(context.args[0])))
     except: await update.message.reply_text("Invalid index.")
 async def paperstatus_cmd(update, context): await update.message.reply_text(brain.get_paper_status(), parse_mode="Markdown")
+async def voicealert_cmd(update, context):
+    text = "Voice alert triggered."
+    if context.args:
+        text = " ".join(context.args)
+    result = speak_alert(text)
+    await update.message.reply_text(result)
 async def monitor_cmd(update, context):
     if context.args:
         state = context.args[0].lower()
@@ -368,6 +550,20 @@ async def feedback_cmd(update, context):
     if is_good: brain.memory["feedback_positive"] += 1
     else: brain.memory["feedback_negative"] += 1
     save_memory(brain.memory); await update.message.reply_text("📝 Feedback recorded.")
+async def briefing_cmd(update, context):
+    await update.message.reply_text(get_market_briefing_text(), parse_mode="Markdown")
+async def strategy_cmd(update, context):
+    pair = context.args[0].upper() if context.args else None
+    if not pair:
+        await update.message.reply_text("Usage: /strategy EURUSD", parse_mode="Markdown")
+        return
+    rating = rate_forex_setup(pair)
+    if rating:
+        resp = f"*{pair} Strategy*\nPrice: {rating['price']:.5f}\nScore: {rating['score']}/100\n"
+        if rating['reasons']: resp += "\n".join(rating['reasons'])
+        await update.message.reply_text(resp, parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ Could not fetch price or strategy.", parse_mode="Markdown")
 async def evolve_cmd(update, context):
     if len(brain.memory["signal_history"]) < 5: await update.message.reply_text("Not enough data."); return
     brain.memory["last_evolved"] = datetime.now().isoformat()
@@ -389,8 +585,48 @@ async def logs_cmd(update, context):
     await update.message.reply_text(f"📋 *Logs*\nSignals: {total}\nPositive: {pos}\nNegative: {neg}\nThreshold: {data['alert_threshold']}%\nMonitoring: {'ON' if data['monitoring'] else 'OFF'}", parse_mode="Markdown")
 async def status_cmd(update, context):
     mem = brain.memory
-    text = (f"*Jarvis Forex AI Status*\nMonitoring: {'ON' if mem['monitoring'] else 'OFF'}\nActive Pairs: {', '.join(mem['active_forex_pairs'])}\nScan interval: {mem['scan_interval_min']} min\nAlert threshold: {mem['alert_threshold']}%\nSignals: {len(mem['signal_history'])}\nFeedback: +{mem['feedback_positive']} / -{mem['feedback_negative']}\nPaper Balance: ${mem.get('paper_balance',1000):.2f} USDT\nLast evolved: {mem.get('last_evolved','never')}")
+    autopilot = brain.get_autopilot_status()
+    text = (f"*Jarvis Forex AI Status*\nMonitoring: {'ON' if mem['monitoring'] else 'OFF'}\nAutopilot: {'ON' if autopilot['enabled'] else 'OFF'}\nMode: {autopilot['mode']}\nRisk: {autopilot['risk']}\nAutopilot signals: {autopilot['signals']}\nActive Pairs: {', '.join(mem['active_forex_pairs'])}\nScan interval: {mem['scan_interval_min']} min\nAlert threshold: {mem['alert_threshold']}%\nSignals: {len(mem['signal_history'])}\nFeedback: +{mem['feedback_positive']} / -{mem['feedback_negative']}\nPaper Balance: ${mem.get('paper_balance',1000):.2f} USDT\nLast evolved: {mem.get('last_evolved','never')}")
     await update.message.reply_text(text, parse_mode="Markdown")
+
+async def assistant_cmd(update, context):
+    """Simple assistant bridge: replies using ai_assistant_response()."""
+    text = " ".join(context.args) if context.args else (update.message.text or "")
+    resp = ai_assistant_response(text)
+    await update.message.reply_text(resp, parse_mode="Markdown")
+
+async def autopilot_cmd(update, context):
+    """Control autopilot: on/off, mode, risk, status."""
+    args = context.args or []
+    if not args:
+        st = brain.get_autopilot_status()
+        await update.message.reply_text(f"Autopilot: {'ON' if st['enabled'] else 'OFF'}\nMode: {st['mode']}\nRisk: {st['risk']}\nSignals: {st['signals']}")
+        return
+    cmd = args[0].lower()
+    if cmd in ("on", "off"):
+        brain.memory["autopilot_enabled"] = (cmd == "on")
+        save_memory(brain.memory)
+        await update.message.reply_text(f"Autopilot {'enabled' if cmd=='on' else 'disabled'}.")
+        return
+    if cmd == "mode" and len(args) > 1:
+        mode = args[1].lower()
+        if mode in ("balanced", "aggressive", "conservative"):
+            brain.memory["autopilot_mode"] = mode
+            save_memory(brain.memory)
+            await update.message.reply_text(f"Autopilot mode set to {mode}.")
+            return
+    if cmd == "risk" and len(args) > 1:
+        risk = args[1].lower()
+        if risk in ("low", "medium", "high"):
+            brain.memory["autopilot_risk"] = risk
+            save_memory(brain.memory)
+            await update.message.reply_text(f"Autopilot risk set to {risk}.")
+            return
+    if cmd == "status":
+        st = brain.get_autopilot_status()
+        await update.message.reply_text(str(st))
+        return
+    await update.message.reply_text("Usage: /autopilot on|off|mode <balanced|aggressive|conservative>|risk <low|medium|high>|status")
 async def update_cmd(update, context):
     await update.message.reply_text("🔄 Pulling from GitHub...")
     try:
@@ -400,8 +636,16 @@ async def update_cmd(update, context):
     except Exception as e: await update.message.reply_text(f"❌ Error: {e}")
 async def restart_cmd(update, context): await update.message.reply_text("♻️ Restarting..."); time.sleep(1); restart_bot()
 
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Telegram application error", exc_info=context.error)
+    if isinstance(context.error, Conflict):
+        logger.warning("Telegram polling conflict detected: another getUpdates consumer may be running.")
+
 async def autonomous_cycle(context):
     if not brain.memory["monitoring"]: return
+    autopilot_enabled = brain.memory.get("autopilot_enabled", False)
+    mode = brain.memory.get("autopilot_mode", "balanced")
+    threshold = 80 if mode == "balanced" else 75 if mode == "aggressive" else 88
     for pair in brain.memory["active_forex_pairs"]:
         price = get_forex_price(pair)
         if price:
@@ -416,6 +660,9 @@ async def autonomous_cycle(context):
                     msg = f"🤖 *Forex Alert* – {pair}\n{p['name']} ({p['confidence']}%)\nPrice: {price:.5f}"
                     await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
                     brain.log_signal({"pair":pair,**p})
+                    if autopilot_enabled and p["confidence"] >= threshold:
+                        trade = brain.autopilot_execute(pair, p["name"], p["confidence"])
+                        await context.bot.send_message(chat_id=CHAT_ID, text=f"🤖 Autopilot executed: {trade}", parse_mode="Markdown")
 
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 analyzer = SentimentIntensityAnalyzer()
@@ -445,7 +692,8 @@ def speak_alert(text):
     except ImportError: return "gTTS not installed."
     except Exception as e: return f"Voice error: {e}"
 
-async def main():
+def build_app():
+    clear_telegram_state()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("help",help_cmd)); app.add_handler(CommandHandler("ping",ping))
     app.add_handler(CommandHandler("forex",forex_cmd)); app.add_handler(CommandHandler("metals",metals_cmd)); app.add_handler(CommandHandler("calendar",calendar_cmd))
@@ -458,10 +706,34 @@ async def main():
     app.add_handler(CommandHandler("feedback",feedback_cmd)); app.add_handler(CommandHandler("evolve",evolve_cmd))
     app.add_handler(CommandHandler("alerts",alerts_cmd)); app.add_handler(CommandHandler("logs",logs_cmd)); app.add_handler(CommandHandler("status",status_cmd))
     app.add_handler(CommandHandler("update",update_cmd)); app.add_handler(CommandHandler("restart",restart_cmd))
+    app.add_handler(CommandHandler("assistant",assistant_cmd)); app.add_handler(CommandHandler("autopilot",autopilot_cmd))
+    app.add_handler(CommandHandler("briefing",briefing_cmd)); app.add_handler(CommandHandler("strategy",strategy_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
     app.job_queue.run_repeating(autonomous_cycle, interval=300, first=10)
-    logger.info("🤖 Jarvis Forex AI starting...")
-    await app.initialize(); await app.start(); await app.updater.start_polling(); await asyncio.Event().wait()
+    return app
+
+def main():
+    if not TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN is not configured.")
+        return
+
+    max_attempts = 10
+    attempt = 1
+    while attempt <= max_attempts:
+        app = build_app()
+        logger.info("🤖 Jarvis Forex AI starting (attempt %s/%s)...", attempt, max_attempts)
+        try:
+            app.run_polling(bootstrap_retries=10, drop_pending_updates=True)
+            logger.warning("Polling loop ended on attempt %s. Retrying after delay...", attempt)
+        except Conflict as e:
+            logger.warning("Telegram polling conflict on attempt %s: %s", attempt, e)
+        except Exception:
+            logger.exception("Bot startup failed on attempt %s.", attempt)
+        attempt += 1
+        if attempt <= max_attempts:
+            time.sleep(5)
+    logger.error("Exceeded maximum polling retries.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

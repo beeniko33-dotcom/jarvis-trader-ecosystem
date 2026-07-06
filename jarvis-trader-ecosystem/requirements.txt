@@ -5,7 +5,9 @@ yfinance
 pandas-ta
 scikit-learn
 tensorflow
-python-telegram-bot
+python-telegram-bot[job-queue]
 requests
 python-dotenv
 backtrader
+vaderSentiment
+gtts
