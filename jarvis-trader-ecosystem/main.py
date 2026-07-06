@@ -5,6 +5,12 @@ from telegram import Update
 from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import requests
+import numpy as np
+from collections import deque
+
+# Import advanced predictor
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from models.predictor import get_predictor
 
 def restart_bot():
     os.execv(sys.executable, [sys.executable, __file__])
@@ -35,11 +41,18 @@ FOREX_NAMES = {
 MEMORY_FILE = "jarvis_memory.json"
 
 PRICE_CACHE = {}
+PRICE_HISTORY = {}  # Store price history for ML training
 
 def cache_price(symbol, price):
     if price is None:
         return
-    PRICE_CACHE[symbol.upper()] = {"price": price, "ts": time.time()}
+    sym = symbol.upper()
+    PRICE_CACHE[sym] = {"price": price, "ts": time.time()}
+    
+    # Store price history (last 1000 prices per symbol)
+    if sym not in PRICE_HISTORY:
+        PRICE_HISTORY[sym] = deque(maxlen=1000)
+    PRICE_HISTORY[sym].append(price)
 
 
 def get_cached_price(symbol, ttl=20):
@@ -348,10 +361,38 @@ def detect_forex_patterns(prices):
     return alerts
 
 def rate_forex_setup(pair, news_sentiment=None, calendar_events=None):
+    """Enhanced with advanced ML predictions"""
     price = get_forex_price(pair)
     if price is None: return None
+    
     score = 50
     reasons = []
+    ml_prediction = None
+    ml_confidence = 0
+    
+    # Get advanced ML prediction
+    try:
+        predictor = get_predictor()
+        if pair in PRICE_HISTORY and len(PRICE_HISTORY[pair]) >= 30:
+            ml_result = predictor.predict(list(PRICE_HISTORY[pair]))
+            ml_prediction = ml_result
+            ml_confidence = ml_result.get('confidence', 0)
+            
+            # Integrate ML score
+            if ml_result['direction'] == 1:
+                score += int(ml_confidence * 30)
+                reasons.append(f"🤖 ML bullish ({ml_result['signal_strength']})")
+            elif ml_result['direction'] == -1:
+                score -= int(ml_confidence * 30)
+                reasons.append(f"🤖 ML bearish ({ml_result['signal_strength']})")
+            
+            # Add ML reasoning
+            if ml_result.get('reasoning'):
+                reasons.append(ml_result['reasoning'])
+    except Exception as e:
+        logger.debug(f"ML prediction error for {pair}: {e}")
+    
+    # Technical analysis patterns
     if pair in ["EURUSD","GBPUSD","AUDUSD","NZDUSD"]:
         try:
             klines = fetch_binance_klines(pair+"USDT")
@@ -363,17 +404,20 @@ def rate_forex_setup(pair, news_sentiment=None, calendar_events=None):
                         if "bull" in p["name"].lower(): score += 15; reasons.append(f"Bullish {p['name']}")
                         else: score -= 15; reasons.append(f"Bearish {p['name']}")
         except: pass
+    
     if news_sentiment:
         if news_sentiment > 0.2: score += 10; reasons.append("Positive news sentiment")
         elif news_sentiment < -0.2: score -= 10; reasons.append("Negative news sentiment")
+    
     if calendar_events:
         for e in calendar_events:
             if "USD" in e.get("currency","") and "High" in e.get("impact",""):
                 if "GDP" in e.get("event","") or "NFP" in e.get("event",""):
                     score += 5 if random.random() > 0.5 else -5
                     reasons.append("High impact USD event today")
+    
     score = max(0, min(100, score))
-    return {"score":score,"reasons":reasons,"price":price}
+    return {"score":score,"reasons":reasons,"price":price,"ml_prediction":ml_prediction}
 
 def fetch_binance_klines(symbol="EURUSDT", interval="1h", limit=100):
     try:
@@ -389,12 +433,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "📚 *Forex AI Commands*\n"
-        "/forex – live forex rates\n/calendar – economic events\n/metals – XAUUSD / XAGUSD\n/setup <pair> – full analysis\n"
-        "/mtsignal <pair> – MT5 signal\n/strategy <pair> – signal strategy\n/briefing – market briefing\n/paperbuy /papersell <pair>\n/paperclose <idx> /paperstatus\n"
-        "/assistant <question> – AI assistant chat\n/autopilot on|off|mode <balanced|aggressive|conservative>|risk <low|medium|high>\n"
-        "/scanforex – scan active pairs\n/voicealert <message> – speak alert\n/monitor on|off\n/update – pull from GitHub\n"
-        "Or just send a natural message: 'market briefing', 'eurusd strategy', 'autopilot status'"
+        "📚 *Jarvis Advanced AI – Command Menu*\n\n"
+        "🤖 *AI PREDICTIONS*\n"
+        "/mlpredict <pair> – Advanced ML prediction\n"
+        "/mlscan – Scan active pairs with AI\n"
+        "/trainml – Train/retrain ML models\n\n"
+        "📊 *MARKET DATA*\n"
+        "/forex – live forex rates\n/calendar – economic events\n/metals – XAUUSD / XAGUSD\n"
+        "/setup <pair> – full analysis with ML\n/strategy <pair> – signal strategy\n/briefing – market briefing\n\n"
+        "🎯 *TRADING*\n"
+        "/paperbuy /papersell <pair> – paper trades\n/paperclose <idx> /paperstatus – manage trades\n\n"
+        "🔄 *AUTOMATION*\n"
+        "/autopilot on|off|mode|risk|status – autopilot control\n"
+        "/scanforex – scan active pairs\n/monitor on|off – toggle monitoring\n"
+        "/interval <min> – set scan interval\n/setthreshold <0-100> – alert threshold\n\n"
+        "⚙️ *SETTINGS*\n"
+        "/symbols <pair> – set active pairs\n"
+        "/addsymbol /removesymbol – manage pairs\n"
+        "/feedback good|bad – train the AI\n"
+        "/assistant <question> – chat with AI\n"
+        "/status – view status\n"
+        "/help – this menu"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -564,6 +623,87 @@ async def strategy_cmd(update, context):
         await update.message.reply_text(resp, parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ Could not fetch price or strategy.", parse_mode="Markdown")
+
+async def mlpredict_cmd(update, context):
+    """Advanced ML prediction command"""
+    pair = context.args[0].upper() if context.args else "EURUSD"
+    
+    if pair not in PRICE_HISTORY or len(PRICE_HISTORY[pair]) < 30:
+        await update.message.reply_text(f"⏳ Building ML model for {pair}... Not enough data yet.")
+        return
+    
+    try:
+        predictor = get_predictor()
+        ml_result = predictor.predict(list(PRICE_HISTORY[pair]))
+        price = get_forex_price(pair)
+        
+        direction_str = "📈 BUY" if ml_result['direction'] == 1 else "📉 SELL"
+        confidence_pct = int(ml_result['confidence'] * 100)
+        
+        resp = (f"*🤖 ML PREDICTION — {pair}*\n\n"
+                f"Direction: {direction_str}\n"
+                f"Confidence: {confidence_pct}%\n"
+                f"Signal Strength: *{ml_result['signal_strength'].upper()}*\n"
+                f"Current Price: {price:.5f}\n\n"
+                f"*Analysis:*\n{ml_result['reasoning']}")
+        
+        await update.message.reply_text(resp, parse_mode="Markdown")
+        
+        # Log prediction
+        predictor.log_prediction(pair, ml_result)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ ML prediction error: {str(e)[:100]}")
+
+async def mlscan_cmd(update, context):
+    """Scan all active pairs with ML predictions"""
+    await update.message.reply_text("🤖 Scanning with Advanced AI...", parse_mode="Markdown")
+    
+    pairs = brain.memory.get("active_forex_pairs", FOREX_PAIRS[:5])
+    results = []
+    
+    for pair in pairs:
+        if pair in PRICE_HISTORY and len(PRICE_HISTORY[pair]) >= 30:
+            try:
+                predictor = get_predictor()
+                ml_result = predictor.predict(list(PRICE_HISTORY[pair]))
+                price = get_forex_price(pair)
+                
+                if ml_result['confidence'] >= 0.75:
+                    direction = "📈" if ml_result['direction'] == 1 else "📉"
+                    confidence = int(ml_result['confidence'] * 100)
+                    results.append(f"{direction} {pair}: {confidence}% {ml_result['signal_strength']}")
+            except:
+                pass
+    
+    if results:
+        msg = "*🤖 ML SCAN RESULTS*\n\n" + "\n".join(results)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    else:
+        await update.message.reply_text("No strong AI signals detected yet.")
+
+async def train_ml_cmd(update, context):
+    """Train ML models on recent price history"""
+    await update.message.reply_text("🧠 Training ML models...", parse_mode="Markdown")
+    
+    predictor = get_predictor()
+    trained_pairs = []
+    
+    for pair in brain.memory.get("active_forex_pairs", FOREX_PAIRS[:5]):
+        if pair in PRICE_HISTORY and len(PRICE_HISTORY[pair]) >= 100:
+            try:
+                success = predictor.train_on_history(list(PRICE_HISTORY[pair]))
+                if success:
+                    trained_pairs.append(pair)
+            except Exception as e:
+                logger.debug(f"Training failed for {pair}: {e}")
+    
+    if trained_pairs:
+        msg = f"✅ ML models trained on: {', '.join(trained_pairs)}"
+    else:
+        msg = "⚠️ Not enough data to train. Continue collecting price history."
+    
+    await update.message.reply_text(msg, parse_mode="Markdown")
 async def evolve_cmd(update, context):
     if len(brain.memory["signal_history"]) < 5: await update.message.reply_text("Not enough data."); return
     brain.memory["last_evolved"] = datetime.now().isoformat()
@@ -642,27 +782,103 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning("Telegram polling conflict detected: another getUpdates consumer may be running.")
 
 async def autonomous_cycle(context):
+    """Advanced AI autonomous trading cycle with ML predictions"""
     if not brain.memory["monitoring"]: return
+    
     autopilot_enabled = brain.memory.get("autopilot_enabled", False)
     mode = brain.memory.get("autopilot_mode", "balanced")
-    threshold = 80 if mode == "balanced" else 75 if mode == "aggressive" else 88
+    ml_threshold = 0.80 if mode == "balanced" else 0.75 if mode == "aggressive" else 0.88
+    
+    predictor = get_predictor()
+    
     for pair in brain.memory["active_forex_pairs"]:
         price = get_forex_price(pair)
-        if price:
-            patterns = []
-            if pair in ["EURUSD","GBPUSD","AUDUSD","NZDUSD"]:
+        if not price:
+            continue
+        
+        # ML-powered prediction
+        ml_prediction = None
+        if pair in PRICE_HISTORY and len(PRICE_HISTORY[pair]) >= 30:
+            try:
+                ml_prediction = predictor.predict(list(PRICE_HISTORY[pair]))
+            except Exception as e:
+                logger.debug(f"ML prediction failed for {pair}: {e}")
+        
+        # Traditional technical patterns
+        patterns = []
+        if pair in ["EURUSD","GBPUSD","AUDUSD","NZDUSD"]:
+            try:
                 klines = fetch_binance_klines(pair+"USDT")
                 if klines:
                     closes = [float(k[4]) for k in klines]
                     patterns = detect_forex_patterns(closes)
-            for p in patterns:
-                if p["confidence"] >= brain.memory["alert_threshold"]:
-                    msg = f"🤖 *Forex Alert* – {pair}\n{p['name']} ({p['confidence']}%)\nPrice: {price:.5f}"
-                    await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-                    brain.log_signal({"pair":pair,**p})
-                    if autopilot_enabled and p["confidence"] >= threshold:
-                        trade = brain.autopilot_execute(pair, p["name"], p["confidence"])
-                        await context.bot.send_message(chat_id=CHAT_ID, text=f"🤖 Autopilot executed: {trade}", parse_mode="Markdown")
+            except: pass
+        
+        # Process ML alerts
+        if ml_prediction and ml_prediction['confidence'] >= brain.memory["alert_threshold"] / 100:
+            direction_str = "📈 BUY" if ml_prediction['direction'] == 1 else "📉 SELL"
+            confidence_pct = int(ml_prediction['confidence'] * 100)
+            
+            msg = (f"🤖 *AI ALERT — {pair}*\n"
+                   f"Signal: {direction_str}\n"
+                   f"Confidence: {confidence_pct}%\n"
+                   f"Strength: {ml_prediction['signal_strength']}\n"
+                   f"Analysis: {ml_prediction['reasoning']}\n"
+                   f"Price: {price:.5f}")
+            
+            await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+            
+            # Log signal
+            brain.log_signal({
+                "pair": pair,
+                "type": "ml_prediction",
+                "direction": ml_prediction['direction'],
+                "confidence": ml_prediction['confidence'],
+                "signal_strength": ml_prediction['signal_strength']
+            })
+            
+            # Autopilot execution
+            if autopilot_enabled and ml_prediction['confidence'] >= ml_threshold:
+                risk = brain.memory.get("autopilot_risk", "medium")
+                if risk == "low": scale = 0.05
+                elif risk == "high": scale = 0.15
+                else: scale = 0.1
+                
+                direction_name = "bullish" if ml_prediction['direction'] == 1 else "bearish"
+                trade = brain.autopilot_execute(
+                    pair, 
+                    f"ML {direction_name}",
+                    ml_prediction['confidence']
+                )
+                
+                await context.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=f"⚡ *AUTOPILOT EXECUTED*\n{trade}",
+                    parse_mode="Markdown"
+                )
+        
+        # Process technical patterns as secondary signal
+        for p in patterns:
+            if p["confidence"] >= brain.memory["alert_threshold"]:
+                msg = f"📊 *Technical Pattern — {pair}*\n{p['name']} ({p['confidence']}%)\nPrice: {price:.5f}"
+                await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+                brain.log_signal({"pair":pair, "pattern": p['name'], "confidence": p['confidence']})
+                
+                if autopilot_enabled and p["confidence"] >= 85:
+                    trade = brain.autopilot_execute(pair, p["name"], p["confidence"])
+                    await context.bot.send_message(
+                        chat_id=CHAT_ID,
+                        text=f"⚡ Pattern trade: {trade}",
+                        parse_mode="Markdown"
+                    )
+        
+        # Periodic model retraining every 100 cycles
+        if random.random() < 0.05:  # ~5% chance per cycle
+            try:
+                if len(PRICE_HISTORY.get(pair, [])) >= 100:
+                    predictor.train_on_history(list(PRICE_HISTORY[pair]))
+            except:
+                pass
 
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 analyzer = SentimentIntensityAnalyzer()
@@ -708,6 +924,9 @@ def build_app():
     app.add_handler(CommandHandler("update",update_cmd)); app.add_handler(CommandHandler("restart",restart_cmd))
     app.add_handler(CommandHandler("assistant",assistant_cmd)); app.add_handler(CommandHandler("autopilot",autopilot_cmd))
     app.add_handler(CommandHandler("briefing",briefing_cmd)); app.add_handler(CommandHandler("strategy",strategy_cmd))
+    # Advanced AI commands
+    app.add_handler(CommandHandler("mlpredict",mlpredict_cmd)); app.add_handler(CommandHandler("mlscan",mlscan_cmd))
+    app.add_handler(CommandHandler("trainml",train_ml_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
     app.job_queue.run_repeating(autonomous_cycle, interval=300, first=10)

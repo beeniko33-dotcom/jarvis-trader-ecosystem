@@ -11,5 +11,16 @@
   "feedback_positive": 0,
   "feedback_negative": 0,
   "interaction_count": 0,
-  "last_evolved": null
+  "last_evolved": null,
+  "active_forex_pairs": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "autopilot_enabled": true,
+  "autopilot_mode": "balanced",
+  "autopilot_risk": "medium",
+  "paper_trades": [],
+  "paper_balance": 1000.0,
+  "last_briefing": null
 }
