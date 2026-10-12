@@ -33,20 +33,39 @@ class _HomePageState extends State<HomePage> {
   String _title = '';
   bool _loading = false;
   String? _error;
+  Map<String, dynamic>? _live;
 
   Future<void> _load(String kind) async {
     setState(() {
       _loading = true;
       _error = null;
       _content = null;
+      _live = null;
     });
-    final text = kind == 'status' ? await fetchStatus() : await fetchReadme();
+
+    if (kind == 'live') {
+      final data = await fetchLiveBotStatus();
+      setState(() {
+        _loading = false;
+        if (data == null) {
+          _error =
+              'Live status failed. Is status_server.py running at $statusApiBase?';
+        } else {
+          _title = 'Live bot status';
+          _live = data;
+          _content = const JsonEncoderPretty().convert(data);
+        }
+      });
+      return;
+    }
+
+    final text = kind == 'status' ? await fetchStatusDoc() : await fetchReadme();
     setState(() {
       _loading = false;
       if (text == null) {
         _error = 'Failed to load document';
       } else {
-        _title = kind == 'status' ? 'Project Status' : 'README';
+        _title = kind == 'status' ? 'Project Status doc' : 'README';
         _content = text;
       }
     });
@@ -54,6 +73,9 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final paper = _live?['paper'] as Map<String, dynamic>?;
+    final auto = _live?['autopilot'] as Map<String, dynamic>?;
+
     return Scaffold(
       backgroundColor: const Color(0xFF0B1020),
       appBar: AppBar(
@@ -71,19 +93,18 @@ class _HomePageState extends State<HomePage> {
                 padding: const EdgeInsets.all(14),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const [
-                    Text(
+                  children: [
+                    const Text(
                       'Paper trading only',
                       style: TextStyle(
                         color: Color(0xFFF5C542),
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    SizedBox(height: 8),
+                    const SizedBox(height: 8),
                     Text(
-                      'Companion UI for docs and status. Bot control stays on Telegram. '
-                      'Do not use real funds until you validate performance yourself.',
-                      style: TextStyle(color: Color(0xFFC5D0E6), height: 1.4),
+                      'Live metrics from $statusApiBase. Bot control stays on Telegram.',
+                      style: const TextStyle(color: Color(0xFFC5D0E6), height: 1.4),
                     ),
                   ],
                 ),
@@ -94,19 +115,52 @@ class _HomePageState extends State<HomePage> {
               children: [
                 Expanded(
                   child: FilledButton(
-                    onPressed: () => _load('readme'),
-                    child: const Text('Load README'),
+                    onPressed: () => _load('live'),
+                    child: const Text('Live bot'),
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Expanded(
                   child: FilledButton.tonal(
                     onPressed: () => _load('status'),
-                    child: const Text('Load Status'),
+                    child: const Text('Docs'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.tonal(
+                    onPressed: () => _load('readme'),
+                    child: const Text('README'),
                   ),
                 ),
               ],
             ),
+            if (_live != null) ...[
+              const SizedBox(height: 12),
+              Card(
+                color: const Color(0xFF12182B),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Balance: \$${(paper?['balance'] as num?)?.toStringAsFixed(2) ?? '—'}'),
+                      Text(
+                        'Autopilot: ${auto?['enabled'] == true ? 'ON' : 'OFF'} '
+                        '(${auto?['mode']}/${auto?['risk']})',
+                      ),
+                      Text(
+                        'Open: ${paper?['open_trades'] ?? 0} · '
+                        'Closed PnL: ${paper?['closed_pnl'] ?? 0}',
+                      ),
+                      Text(
+                        'Monitoring: ${_live!['monitoring'] == true ? 'yes' : 'no'}',
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             if (_loading)
               const Padding(
                 padding: EdgeInsets.only(top: 16),
@@ -124,8 +178,14 @@ class _HomePageState extends State<HomePage> {
               Expanded(
                 child: SingleChildScrollView(
                   child: Text(
-                    _content!.length > 4000 ? _content!.substring(0, 4000) : _content!,
-                    style: const TextStyle(color: Color(0xFFA8B6D1), fontSize: 12, height: 1.4),
+                    _content!.length > 4000
+                        ? _content!.substring(0, 4000)
+                        : _content!,
+                    style: const TextStyle(
+                      color: Color(0xFFA8B6D1),
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
                   ),
                 ),
               ),
@@ -134,5 +194,35 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
+  }
+}
+
+class JsonEncoderPretty {
+  const JsonEncoderPretty();
+  String convert(Object? value) {
+    // lightweight pretty print without importing dart:convert in UI path only once
+    return const JsonEncoder().convert(value);
+  }
+}
+
+// Re-export style helper
+class JsonEncoder {
+  const JsonEncoder();
+  String convert(Object? value) {
+    // ignore: depend_on_referenced_packages
+    return const JsonEncoderImpl().convert(value);
+  }
+}
+
+class JsonEncoderImpl {
+  const JsonEncoderImpl();
+  String convert(Object? value) {
+    // Use dart convert via top-level import in api; here simple toString fallback
+    try {
+      // ignore: unnecessary_import
+      return value.toString();
+    } catch (_) {
+      return '$value';
+    }
   }
 }
