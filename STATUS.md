@@ -1,61 +1,46 @@
 # Project Status – Jarvis Trader Ecosystem
 
 **Last updated**: October 2026  
-**Readiness target**: Phase 1 (foundation) complete · Phase 2 (next level) in progress
+**Readiness**: Phase 1 complete · Phase 2 in progress · Smoke tests verified
 
-See also: **PRODUCTION.md** for the full Phase 1 / Phase 2 checklist.
+See also: **PRODUCTION.md**, **MOBILE.md**
 
 ## Security
 
-- [x] Removed committed `.env` files containing real credentials
-- [x] Added comprehensive `.gitignore`
-- [x] Updated `.env.example` (root + nested)
-- [x] Removed committed bytecode and runtime memory files
-- [ ] **You still need to rotate** the previously exposed Telegram bot token and MetaTrader 5 password
+- [x] Removed committed credential files
+- [x] Strong `.gitignore` + `.env.example`
+- [x] Runtime junk / bytecode removed
+- [ ] **Rotate** previously exposed Telegram token and MT5 password (your action)
 
-## Structure & ops
+## Verified in automated / sandbox checks
 
-- [x] Root `main.py` launcher starts the nested application correctly
-- [x] Hardened Dockerfile (non-root user, healthcheck)
-- [x] Basic Python CI workflow
-- [x] `scripts/check_config.py` pre-flight validation
-- [x] Accurate START_HERE / README / PRODUCTION docs
-- [ ] Nested folder flattened (recommended local `git mv`)
+- [x] `main.py` (launcher) parses and compiles
+- [x] Nested `jarvis-trader-ecosystem/main.py` compiles (~958 lines)
+- [x] `models/predictor.py` compiles (~488 lines)
+- [x] `scripts/check_config.py` correctly fails when `.env` is missing
+- [x] Public forex API reachable (exchangerate-api)
+- [x] CI workflow runs syntax + smoke tests
 
-## How to run (Phase 2 style)
+Live Telegram bot start was **not** executed here (requires your rotated secrets and a host process).
+
+## How to run
 
 ```bash
-git clone https://github.com/beeniko33-dotcom/jarvis-trader-ecosystem.git
-cd jarvis-trader-ecosystem
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # fill real secrets; never commit
+cp .env.example .env   # real secrets only
 python scripts/check_config.py
-python main.py
+python tests/test_smoke.py
+python main.py         # starts nested bot after config check
+# or: python main.py --check-only
 ```
 
-Or with Docker:
+## Mobile
 
-```bash
-docker build -t jarvis-trader .
-docker run --env-file .env jarvis-trader
-```
+Expo + Flutter companion apps under `mobile/`. See **MOBILE.md**.
 
-## Related repositories
+## Your next actions
 
-| Repo | Role | Phase notes |
-|------|------|-------------|
-| **jarvis-trader-ecosystem** | Primary AI + Telegram bot | Phase 1 done, Phase 2 docs + ops in place |
-| jarvis-ai | Backend / risk / compose stack | Strong compose; change default secrets |
-| jarvis-trader | Compact RSI bot | Foundation done |
-| jarvistrader | Next.js frontend | Foundation done |
-| jarvis-ai-trading-system | Sparse packaging | Points to primary |
-| quantum-peak-pro | Skeleton | Placeholder only |
-| advanced-scraper | Scraper toolkit | Authorized use only |
-
-## Your immediate actions for Phase 2
-
-1. Rotate exposed credentials
-2. Paper-trade only until you verify signal quality yourself
-3. Use `scripts/check_config.py` before every run
-4. Optionally flatten the nested directory locally
+1. Rotate credentials  
+2. Run bot on your machine/VPS with paper trading  
+3. Optional: flatten nested folder locally  
