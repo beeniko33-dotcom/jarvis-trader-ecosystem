@@ -1,8 +1,23 @@
 {
   "expo": {
-    "name": "Jarvis Expo",
-    "slug": "jarvis-expo",
-    "version": "1.0.0",
-    "sdkVersion": "48.0.0"
+    "name": "Jarvis Trader",
+    "slug": "jarvis-trader",
+    "version": "1.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0B1020"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.beeniko.jarvistrader"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0B1020"
+      },
+      "package": "com.beeniko.jarvistrader"
+    }
   }
 }
