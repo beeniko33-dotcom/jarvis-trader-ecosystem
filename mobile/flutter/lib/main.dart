@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'api_service.dart';
 
@@ -53,7 +55,7 @@ class _HomePageState extends State<HomePage> {
         } else {
           _title = 'Live bot status';
           _live = data;
-          _content = const JsonEncoderPretty().convert(data);
+          _content = const JsonEncoder.withIndent('  ').convert(data);
         }
       });
       return;
@@ -144,7 +146,9 @@ class _HomePageState extends State<HomePage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Balance: \$${(paper?['balance'] as num?)?.toStringAsFixed(2) ?? '—'}'),
+                      Text(
+                        'Balance: \$${(paper?['balance'] as num?)?.toStringAsFixed(2) ?? '—'}',
+                      ),
                       Text(
                         'Autopilot: ${auto?['enabled'] == true ? 'ON' : 'OFF'} '
                         '(${auto?['mode']}/${auto?['risk']})',
@@ -194,35 +198,5 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
-  }
-}
-
-class JsonEncoderPretty {
-  const JsonEncoderPretty();
-  String convert(Object? value) {
-    // lightweight pretty print without importing dart:convert in UI path only once
-    return const JsonEncoder().convert(value);
-  }
-}
-
-// Re-export style helper
-class JsonEncoder {
-  const JsonEncoder();
-  String convert(Object? value) {
-    // ignore: depend_on_referenced_packages
-    return const JsonEncoderImpl().convert(value);
-  }
-}
-
-class JsonEncoderImpl {
-  const JsonEncoderImpl();
-  String convert(Object? value) {
-    // Use dart convert via top-level import in api; here simple toString fallback
-    try {
-      // ignore: unnecessary_import
-      return value.toString();
-    } catch (_) {
-      return '$value';
-    }
   }
 }
