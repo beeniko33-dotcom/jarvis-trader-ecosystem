@@ -6,7 +6,8 @@
 
 - [x] Removed committed `.env` files containing real credentials
 - [x] Added comprehensive `.gitignore`
-- [x] Updated `.env.example` with clear placeholders and warnings
+- [x] Updated `.env.example` (root + nested) with clear placeholders and warnings
+- [x] Removed committed bytecode (`__pycache__`) and runtime memory files
 - [ ] **You still need to rotate** the previously exposed Telegram bot token and MetaTrader 5 password
 
 ## Structure
@@ -15,6 +16,7 @@
 - The full bot + ML predictor live under `jarvis-trader-ecosystem/`.
 - Root-level `models/predictor.py` is a historical stub only.
 - Nested folder structure is the main remaining technical debt (flattening recommended later).
+- `START_HERE.md` has been rewritten to be accurate and practical.
 
 ## How to Run
 
@@ -42,8 +44,8 @@ python main.py
 
 ## Recommended next steps
 
-1. Rotate exposed credentials
-2. Flatten nested directory structure
+1. **Rotate exposed credentials** (highest priority)
+2. Flatten nested directory structure (best done locally with `git mv`)
 3. Add automated tests and CI
 4. Paper-trade thoroughly before any live use
 5. Consider consolidating satellite Jarvis repos
