@@ -1,46 +1,51 @@
 # Project Status – Jarvis Trader Ecosystem
 
 **Last updated**: October 2026  
-**Readiness**: Phase 1 complete · Phase 2 in progress · Smoke tests verified
+**Readiness**: Phase 1 complete · Phase 2 advanced · Smoke + status API verified
 
-See also: **PRODUCTION.md**, **MOBILE.md**
+See: **PRODUCTION.md** · **MOBILE.md** · **FLATTEN.md**
 
 ## Security
 
-- [x] Removed committed credential files
-- [x] Strong `.gitignore` + `.env.example`
-- [x] Runtime junk / bytecode removed
-- [ ] **Rotate** previously exposed Telegram token and MT5 password (your action)
+- [x] Secrets removed from tree; strong `.gitignore`
+- [ ] **You: rotate** previously exposed Telegram / MT5 credentials
 
-## Verified in automated / sandbox checks
+## Engineering complete
 
-- [x] `main.py` (launcher) parses and compiles
-- [x] Nested `jarvis-trader-ecosystem/main.py` compiles (~958 lines)
-- [x] `models/predictor.py` compiles (~488 lines)
-- [x] `scripts/check_config.py` correctly fails when `.env` is missing
-- [x] Public forex API reachable (exchangerate-api)
-- [x] CI workflow runs syntax + smoke tests
+- [x] Root launcher + pre-flight config check (`python main.py --check-only`)
+- [x] Hardened Dockerfile + Python CI + `tests/test_smoke.py`
+- [x] `status_server.py` — `GET /health`, `GET /status`
+- [x] Expo + Flutter companions with **Live bot** metrics
+- [x] Production / mobile / flatten documentation
 
-Live Telegram bot start was **not** executed here (requires your rotated secrets and a host process).
+## Verified
 
-## How to run
+- Syntax: launcher, nested bot, predictor, status server
+- Config check fails correctly without `.env`
+- Forex public API reachable
+- Status API returns paper/autopilot metrics from memory file
+
+## Run stack
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # real secrets only
+# secrets
+cp .env.example .env   # rotated tokens only
+
+# bot
 python scripts/check_config.py
-python tests/test_smoke.py
-python main.py         # starts nested bot after config check
-# or: python main.py --check-only
+python main.py
+
+# status API (same dir as jarvis_memory.json)
+cd jarvis-trader-ecosystem && python status_server.py
+
+# mobile
+cd mobile/expo && npx expo start
+# or: cd mobile/flutter && flutter run --dart-define=STATUS_URL=http://10.0.2.2:8787
 ```
 
-## Mobile
-
-Expo + Flutter companion apps under `mobile/`. See **MOBILE.md**.
-
-## Your next actions
+## Remaining (your side)
 
 1. Rotate credentials  
-2. Run bot on your machine/VPS with paper trading  
-3. Optional: flatten nested folder locally  
+2. Paper-trade and measure real signal quality  
+3. Optional structure flatten using **FLATTEN.md**  
+4. EAS/store builds when you have Apple/Google accounts  
