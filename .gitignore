@@ -1,0 +1,80 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs & runtime
+*.log
+logs/
+*.out
+*.pid
+
+# Model artifacts & data (large / generated)
+models/*.h5
+models/*.pkl
+models/*.joblib
+*.csv
+*.parquet
+data/
+output/
+
+# Mobile
+mobile/expo/node_modules/
+mobile/expo/.expo/
+mobile/flutter/.dart_tool/
+mobile/flutter/build/
+
+# Misc
+*.bak
+*.tmp
+.jarvis_memory.json
+jarvis_memory.json
