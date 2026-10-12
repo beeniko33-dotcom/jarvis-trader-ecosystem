@@ -7,7 +7,33 @@ Companion mobile UIs live under `mobile/`:
 | `mobile/expo/` | Expo / React Native | Primary cross-platform companion (Android + iOS) |
 | `mobile/flutter/` | Flutter | Alternative companion UI |
 
-These apps show project docs/status. **Trading control remains on the Telegram Python bot.** They are not full trading terminals.
+**Trading control remains on the Telegram Python bot.** Mobile is for docs + live status.
+
+---
+
+## Live bot status API
+
+Run the status server next to the bot (same folder as `jarvis_memory.json`):
+
+```bash
+cd jarvis-trader-ecosystem
+python status_server.py
+# http://127.0.0.1:8787/health
+# http://127.0.0.1:8787/status
+```
+
+Expo “Live bot” button calls this API.
+
+| Client | Suggested `EXPO_PUBLIC_STATUS_URL` |
+|--------|-------------------------------------|
+| iOS simulator | `http://127.0.0.1:8787` |
+| Android emulator | `http://10.0.2.2:8787` |
+| Physical phone | `http://<your-computer-LAN-IP>:8787` (and set `STATUS_HOST=0.0.0.0`) |
+
+```bash
+# example for Android emulator
+EXPO_PUBLIC_STATUS_URL=http://10.0.2.2:8787 npx expo start
+```
 
 ---
 
@@ -30,26 +56,20 @@ npx expo start
 
 Then press `a` for Android emulator, `i` for iOS simulator, or scan the QR code with Expo Go.
 
-### Production builds with EAS (Android APK/AAB + iOS IPA)
+### Production builds with EAS
 
 ```bash
 cd mobile/expo
 npm install -g eas-cli
 eas login
 eas build:configure
-
-# Android
 eas build -p android --profile production
-
-# iOS (requires Apple Developer Program)
 eas build -p ios --profile production
 ```
 
-You must complete signing setup in the Expo / Apple / Google consoles. Store submission cannot be finished from this environment without your developer accounts and certificates.
-
-App identifiers (see `app.json`):
-- Android package: `com.beeniko.jarvistrader`
-- iOS bundle: `com.beeniko.jarvistrader`
+App identifiers (`app.json`):
+- Android: `com.beeniko.jarvistrader`
+- iOS: `com.beeniko.jarvistrader`
 
 ---
 
@@ -58,38 +78,18 @@ App identifiers (see `app.json`):
 ```bash
 cd mobile/flutter
 flutter pub get
-flutter run                # device/emulator
-flutter build apk          # Android APK
-flutter build appbundle    # Play Store
-flutter build ipa          # iOS (macOS + Xcode + Apple account required)
+flutter run
 ```
 
 ---
 
-## Scope across all repositories
+## Scope
 
-| Repository | Mobile status |
-|------------|---------------|
-| **jarvis-trader-ecosystem** | Expo + Flutter companions updated |
-| jarvis-ai | Separate frontend / historical Flutter paths may exist; not the primary mobile target |
-| jarvistrader | Web (Next.js), not native |
-| Other repos | No dedicated mobile apps; use the main ecosystem companion |
+One companion app for the main ecosystem is enough. Other repos do not each need a store app.
 
-Building and publishing **seven separate store apps** is not appropriate: one companion app for the main trading system is the correct product approach.
+## Your ops checklist
 
----
-
-## What cannot be done from this assistant environment
-
-1. Keep long-running Telegram/trading bots online for you (no persistent process hosting; needs your secrets and a server/VPS).
-2. Sign and upload App Store / Play Store binaries (requires your Apple/Google accounts and signing keys).
-3. End-to-end live trading tests without your rotated tokens and risk acceptance.
-
----
-
-## Recommended next steps for you
-
-1. Rotate previously exposed credentials.
-2. Run the Python bot locally or on a VPS with `python main.py` after `scripts/check_config.py`.
-3. Run the Expo app with `npx expo start` for a mobile companion.
-4. When ready for stores, use EAS builds and your developer accounts.
+1. Rotate credentials  
+2. `python main.py` (bot) + `python status_server.py` (API)  
+3. `npx expo start` (mobile)  
+4. EAS when ready for stores  
