@@ -1,11 +1,13 @@
 import React from 'react';
-import { SafeAreaView } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import HomeScreen from './src/HomeScreen';
 
 export default function App() {
   return (
-    <SafeAreaView style={{flex:1}}>
+    <SafeAreaProvider>
+      <StatusBar style="light" />
       <HomeScreen />
-    </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
