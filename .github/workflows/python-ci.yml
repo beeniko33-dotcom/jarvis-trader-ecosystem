@@ -17,17 +17,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install lightweight test deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests
 
-      - name: Syntax check (root + nested)
+      - name: Syntax compile
         run: |
           python -m py_compile main.py
-          python -m py_compile jarvis-trader-ecosystem/main.py || true
-          python -m py_compile jarvis-trader-ecosystem/models/predictor.py || true
+          python -m py_compile scripts/check_config.py
+          python -m py_compile jarvis-trader-ecosystem/main.py
+          python -m py_compile jarvis-trader-ecosystem/models/predictor.py
 
-      - name: Import smoke (launcher)
+      - name: Smoke tests
+        run: python tests/test_smoke.py
+
+      - name: Config check (expect fail without secrets)
         run: |
-          python -c "import ast; ast.parse(open('main.py').read()); print('launcher OK')"
+          python scripts/check_config.py && exit 1 || exit 0
