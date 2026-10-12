@@ -1,9 +1,5 @@
 const RAW = 'https://raw.githubusercontent.com/beeniko33-dotcom/jarvis-trader-ecosystem/main';
 
-// Point this at your status_server (phone must reach the host).
-// Android emulator -> host machine: http://10.0.2.2:8787
-// iOS simulator -> http://127.0.0.1:8787
-// Physical device -> http://<your-lan-ip>:8787
 export const STATUS_API_BASE =
   process.env.EXPO_PUBLIC_STATUS_URL || 'http://127.0.0.1:8787';
 
@@ -28,14 +24,33 @@ export function fetchStatusDoc() {
 
 export async function fetchLiveBotStatus() {
   try {
-    const res = await fetch(`${STATUS_API_BASE}/status`, { method: 'GET' });
+    const res = await fetch(`${STATUS_API_BASE}/status`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    return { ok: true, data };
+    return { ok: true, data: await res.json() };
   } catch (e) {
     return {
       ok: false,
       error: `${String(e)} — is status_server.py running at ${STATUS_API_BASE}?`,
     };
+  }
+}
+
+export async function fetchSignals(limit = 15) {
+  try {
+    const res = await fetch(`${STATUS_API_BASE}/signals?limit=${limit}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return { ok: true, data: await res.json() };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export async function fetchTrades() {
+  try {
+    const res = await fetch(`${STATUS_API_BASE}/trades`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return { ok: true, data: await res.json() };
+  } catch (e) {
+    return { ok: false, error: String(e) };
   }
 }
