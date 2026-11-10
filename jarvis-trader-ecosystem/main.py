@@ -10,6 +10,7 @@ from collections import deque
 
 # Import advanced predictor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from security import is_authorized_update
 from models.predictor import get_predictor
 
 def restart_bot():
