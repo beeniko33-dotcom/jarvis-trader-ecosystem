@@ -10,7 +10,7 @@ from collections import deque
 
 # Import advanced predictor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from security import is_authorized_update
+from security import is_authorized_update, parse_allowed_user_ids
 from models.predictor import get_predictor
 
 def restart_bot():
@@ -779,12 +779,15 @@ async def restart_cmd(update, context): await update.message.reply_text("♻️ 
 
 async def authorization_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Fail closed unless the update comes from the configured Telegram chat/user."""
-    allowed_user_ids = {
-        value.strip()
-        for value in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",")
-        if value.strip()
-    }
-    if not is_authorized_update(update, CHAT_ID, {int(value) for value in allowed_user_ids}):
+    try:
+        allowed_user_ids = parse_allowed_user_ids(
+            os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")
+        )
+    except ValueError:
+        logger.exception("Invalid TELEGRAM_ALLOWED_USER_IDS; denying Telegram update.")
+        raise ApplicationHandlerStop
+
+    if not is_authorized_update(update, CHAT_ID, allowed_user_ids):
         logger.warning(
             "Blocked unauthorized Telegram update (chat_id=%s, user_id=%s).",
             getattr(getattr(update, "effective_chat", None), "id", None),
