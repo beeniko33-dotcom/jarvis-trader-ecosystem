@@ -10,6 +10,8 @@ from collections import deque
 
 # Import advanced predictor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Also expose repository-root security helpers when launched from another working directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from security import is_authorized_update, parse_allowed_user_ids
 from models.predictor import get_predictor
 
