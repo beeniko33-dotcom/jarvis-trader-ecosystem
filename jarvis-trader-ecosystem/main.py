@@ -3,13 +3,16 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.error import Conflict
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, MessageHandler, TypeHandler, filters, ContextTypes
 import requests
 import numpy as np
 from collections import deque
 
 # Import advanced predictor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Also expose repository-root security helpers when launched from another working directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from security import is_authorized_update, parse_allowed_user_ids
 from models.predictor import get_predictor
 
 def restart_bot():
@@ -776,6 +779,24 @@ async def update_cmd(update, context):
     except Exception as e: await update.message.reply_text(f"❌ Error: {e}")
 async def restart_cmd(update, context): await update.message.reply_text("♻️ Restarting..."); time.sleep(1); restart_bot()
 
+async def authorization_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fail closed unless the update comes from the configured Telegram chat/user."""
+    try:
+        allowed_user_ids = parse_allowed_user_ids(
+            os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")
+        )
+    except ValueError:
+        logger.exception("Invalid TELEGRAM_ALLOWED_USER_IDS; denying Telegram update.")
+        raise ApplicationHandlerStop
+
+    if not is_authorized_update(update, CHAT_ID, allowed_user_ids):
+        logger.warning(
+            "Blocked unauthorized Telegram update (chat_id=%s, user_id=%s).",
+            getattr(getattr(update, "effective_chat", None), "id", None),
+            getattr(getattr(update, "effective_user", None), "id", None),
+        )
+        raise ApplicationHandlerStop
+
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Telegram application error", exc_info=context.error)
     if isinstance(context.error, Conflict):
@@ -911,6 +932,8 @@ def speak_alert(text):
 def build_app():
     clear_telegram_state()
     app = Application.builder().token(TOKEN).build()
+    # Run access control before every command and message handler.
+    app.add_handler(TypeHandler(Update, authorization_guard), group=-1)
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("help",help_cmd)); app.add_handler(CommandHandler("ping",ping))
     app.add_handler(CommandHandler("forex",forex_cmd)); app.add_handler(CommandHandler("metals",metals_cmd)); app.add_handler(CommandHandler("calendar",calendar_cmd))
     app.add_handler(CommandHandler("setup",setup_cmd)); app.add_handler(CommandHandler("mtsignal",mt5signal_cmd)); app.add_handler(CommandHandler("scanforex",scanforex_cmd))
